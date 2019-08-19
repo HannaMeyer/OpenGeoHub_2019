@@ -1,0 +1,308 @@
+---
+title: "Machine learning in remote sensing applications"
+subtitle: "Moving from data reproduction to spatial prediction"
+author: "Hanna Meyer"
+date: "August 18, 2019"
+abstract: "Machine learning algorithms find frequent application in spatial prediction of biotic and abiotic environmental variables. However, the characteristics of spatial data, especially spatial autocorrelation, are widely ignored. This tutorial shows that this is problematic and results in models that can reproduce training data but are unable to make spatial predictions beyond the locations of the training samples. We show that not only spatial validation strategies but also spatial variable selection is essential for reliable spatial predictions. A land cover classification task of the 'Marburg Open Forest' (www.natur40.org), is used for demonstration. Using the machine learning algorithm Random Forests it is first shown how to set up a 'default' model for spatial prediction. It will then be shown how spatial validation affects the view on the model performance. It will further be shown how spatial variable selection affects the predictions to overcome overfitting due to spatial dependencies."
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+This tutorial has two major aims: The first one is to show the general workflow of how how land cover classifications (or similar tasks) based on satellite data can be performed in R using machine learning algorithms. The second important aim is to show how spatial dependencies in the data (which we usually have when we work with spatial data) complicate error assessment with a clear need for spatial validation strategies. It further aims at showing how spatial dependencies affect not only the estimated error of the model but also the model itself where overfitting is a common problem caused by the dependencies.
+
+We will use caret as one of several options for model training.
+
+### Prediction task
+The example prediction task is to perfom a supervised land cover classification for the 'Marburg Open Forest' which is a small research forest in Hessen, Germany.
+The dataset to do this is an aerial image and derived information used as predictors. Resposne (Reference) data were digitized on the basis of expert knowledge and are available as shapefile. 
+
+The dataset is described in Meyer et al (under review). However, sice computation takes a while the data were simplified for this tutorial: Raster data were aggregtaed from 1m to 3m, number of predictor variables were reduced and only a small subset of data points is used for model training. Though this means that the results of this tutorial are not identical to what is published in Meyer et al (under review), this tutorial serves at allowing to reproduce and experiment with the effects of overfitting caused by spatial dependencies (which should generally be the same).
+
+### How to start
+
+For this tutorial we need the raster package for processing of the satellite data as well as the caret package as a wrapper for the randomForest algorithm. Sf is used for handling of the training data available as vector data (polygons). Mapview is used for spatial visualization of the data. CAST will be used later on in this tutorial for spatial variable selection. 
+
+```{r start, message=FALSE}
+rm(list=ls())
+library(raster)
+library(caret)
+library(mapview)
+library(sf)
+library(CAST)
+```
+
+## Load and explore the data
+To start with, let's load and explore the remote sensing (and ancillary) raster data as well as a shapefile of the training sites.
+
+#### Raster data (predictor variables)
+
+```{r load}
+predStack <- stack("data/predictors.grd")
+print(predStack)
+```
+
+The RasterStack contains the optical data from an overflight of the forest (red,green,blue). In addition, a visible vegetation index (vvi) was calculated and the first proncipal component (pca) of the spectral data and the vvi as well as further visible vegetation indices was calculated. Texture of this first principal component is included as the standard deviation in a 5x5 pixel environment (pca_5_sd). Further variables are latitude, longitude and elevation (Note: We don't assume that these are variables relevant for performing a classification of the forest. Instead they are used here as perfect examples of highly autocorrelated predictors. However, they have been also suggested by many authors as potential predictors to imporve the prediction performance).
+Let's plot the rasterStack to get an idea how the variables look like. Note that the rasters are scaled here so that they can be visualized with a single legend.
+ 
+```{r visPredictors}
+spplot(scale(predStack))
+```
+
+#### Vector data (Response variable)
+The shapefile contains the training sites of 10 Land cover classes. These are polygons (379 in total) that were digitized in QGIS on the basis of the aerial image using expert knowledge and can be ragarded as a ground truth for the land cover classification. 
+
+```{r loadPoly}
+trainSites <- read_sf("data/trainingSites.shp")
+print(trainSites)
+```
+
+We can see that the raster data and the training sites have different coordinate reference systems. Though some functions handle that on the fly, it is saver to bring them to the same projection straight away. So we reproject the training sites from LatLon (WGS84) to the UTM projection of the RasterStack.
+
+```{r reproject}
+trainSites <- st_transform(trainSites,crs=projection(predStack))
+```
+
+Using mapview's viewRGB function we can visualize the aerial image channels as true color composite in the geographical context and overlay it with the polygons. Click on the polygons to see which land cover class is assigned to a respective polygon.
+
+```{r visMV, warning=FALSE, message= FALSE}
+viewRGB(predStack, r = 3, g = 2, b = 1, map.types = "Esri.WorldImagery")+
+  mapview(trainSites)
+```
+
+### Extract raster information
+
+In order to train a machine learning model between the spectral properties and the land cover class, we first need to create a data frame that contains the predictor variables at the location of the training sites as well as the corresponding class information. This data frame can be produced with the extract function. The resulting data frame contains the predictor variables for each pixel overlayed by the polygons. This data frame then still needs to be merged with the information on the land cover class from the shapefile.
+
+```{r extract}
+extr <- extract(predStack, trainSites, df=TRUE)
+extr <- merge(extr, trainSites, by.x="ID", by.y="PolygonID")
+head(extr)
+```
+
+In order to speed things up, for this tutorial we will reduce the data. Therefore, from each training polygon only 15% of the pixels will be used for model training.
+
+```{r subset}
+set.seed(100)
+trainids <- createDataPartition(extr$ID,list=FALSE,p=0.15)
+trainDat <- extr[trainids,]
+```
+
+## Basic Model training (no consideration of spatial dependencies)
+### Define predictors and response
+
+For model training we need to define the predictor and response variables. As predictors we can use basically all information from the raster stack as we might assume they could all be meaningful for the differentiation between the land cover classes. As response variable we use the "Type" column of the data frame.
+
+```{r vars}
+predictors <- c("red","green","blue","vvi","pca","pca_5_sd", "dem","lat","lon")
+response <- "Type"
+```
+
+### Random forest model training
+We then train a Random Forest model to lean how the classes can be distinguished based on the predictors. Caret's train function is doing this job. Before starting model trainign we can specify some control settings using trainControl. For hyperparameter tuning (mtry) as well as for a first error assessment we use a 10 fold random cross validation. This is usually a default setting in machine learning applications.
+
+
+```{r trainctrl, warning=FALSE, message=FALSE}
+ctrl <- trainControl(method="cv", 
+                     number =10, 
+                     savePredictions = TRUE)
+```
+
+
+Model training is then performed using caret's train function. We specify "rf" as method, indicating that a Random Forest is applied. See https://topepo.github.io/caret/available-models.html for an overview of models available within caret. For model training we reduce the number of trees (ntree) to 75 to speed things up. Note that usually a larger number (>250) is appropriate. We use the Kappa index for validation.
+
+```{r train, warning=FALSE, message=FALSE}
+# train the model
+set.seed(100)
+model <- train(trainDat[,predictors],
+               trainDat[,response],
+               method="rf",
+               metric="Kappa",
+               trControl=ctrl,
+               importance=TRUE,
+               ntree=75)
+print(model)
+```
+
+We see that the classes could be distinguished with a high Kappa value (>0.95). The optimal mtry value for the model is 5, however, varying the mtry value did not result in high differences.
+
+### Validation of the default model
+
+The summary of the model printed above gives the Kappa (and Accuracy) as the average value from the 10 fold cross-validation. Especially if the folds are rather uneven (as it is usually the case for classifications where land cover classes are not evenly distributed over the study area) it might be more interesting to get a "global" Kappa index, that gives the performance based on all cross-validated predictions at once.
+To do this, we extract all cross-validated predictions from the model with optimal mtry and compare it to the reference.
+
+```{r valid_defaultmodel}
+# get all cross-validated predictions:
+cvPredictions <- model$pred[model$pred$mtry==model$bestTune$mtry,]
+# calculate Kappa etc:
+confusionMatrix(cvPredictions$pred,cvPredictions$obs)$overall
+```
+
+We see that (as already indicated above) we have an exeptionally high Kappa Index (>0.95) and Accuracy (>0.96) which statistically might lead us to conclude that we have produced a perfect classification here.
+
+### Model prediction
+To verify our impression let's actually have a look on how the classification looks like. To perform the classification we can use the trained model and apply it to each pixel of the raster stack using the predict function. Then we can create a map with meaningful colors of the predicted land cover.
+
+```{r predict}
+# do prediction:
+prediction <- predict(predStack,model)
+
+#assign some colors that are easy to interpret visually:
+cols_df <- data.frame("Type_en"=c("Beech","Douglas Fir","Field","Grassland", "Larch","Oak","Road","Settlement", "Spruce", "Water"),
+"col"=c("brown4", "pink", "wheat", "yellowgreen","lightcoral", "yellow","grey50","red","purple","blue"))
+
+#plot prediction:
+spplot(prediction,col.regions=as.character(cols_df$col))
+```
+
+Interestingly, our prediction doesn't look perfect at all. We see for example strange linear patterns that we cannot confirm having a look into the aerial image. Also that round patch of predicted Douglas fir seems suspicious. So apparently the statistcial performance doesn't reflect our impression of the classification result.
+Let's explain this in the next section.
+
+## Train model with spatial cross-validation
+What we did so far is to split our data RANDOMLY into folds for cross-validation. By doing so it is most likely that each of the folds contains data from each training polygon. In this way we validate how well the model performs on nearly identical subsets of the data (hece we could say we validate how well the model can reproduce the training data). But what we want to know is how well the model is able to make predictions for these parts of the area where we don't have any training data. This cannot be assessed by random cross-validation but instead we need a taget-oriented spatial cross-validation strategy that repeatedly leaves entire spatial areas of the training data out for validation.
+
+One (of many) ways for a spatial cross-validation is to devide the study area into spatial blocks (see Roberts et al., 2017 and Valavi et al., 2019). The traing data set already contains an attribute on a spatial block affiliation. Have a look on the spatial blocks to see how the study area was divided.
+
+```{r spfoldsread}
+spfolds <- read_sf("data/spfolds.shp")
+
+mapview(spfolds,map.types = "Esri.WorldImagery")+
+    mapview(trainSites)
+```
+
+Based on the spatial blocks we can change the way we split the data into folds. As we have 20 spatial blocks it might make sense to perform a 20-fold cross-validation where in each iteration all data from one spatial block are left out. CreateSpacetimeFolds from the CAST package allows to divide the data into folds based on an attribute (in this case 'spBlock' which is the spatial block affiliation for each data point).
+
+```{r spfolds}
+set.seed(100)
+folds <- CreateSpacetimeFolds(trainDat, spacevar="spBlock", k=20)
+```
+
+The defined folds can then be fed into the trainControl function to replace the default random cross-validation.
+
+```{r spfoldstrcontol}
+ctrl_sp <- trainControl(method="cv",
+                         savePredictions = TRUE,
+                         index=folds$index,
+                         indexOut=folds$indexOut)
+```
+
+Then we train the model again with spatial cross-validation. We will adopt the same mtry value from the model earlier on to avoid computation time for tuning and to not bring further complications on model tuning into play at that point (see Schratz et al, 2019 for the relevance of tuning with spatial cross-validation).
+
+```{r trainSp, warning=FALSE, message=FALSE}
+set.seed(100)
+model_spatialCV <- train(trainDat[,predictors],
+                   trainDat[,response],
+                   method="rf",
+                   metric="Kappa",
+                   trControl=ctrl_sp,
+                   tuneGrid=data.frame("mtry"=model$bestTune$mtry),
+                   importance=TRUE,
+                   ntree=75)
+```
+
+### Model validation
+
+Now let's have a look how the spatial performance of the model is.
+
+```{r valid}
+cvPredictions <- model_spatialCV$pred[model_spatialCV$pred$mtry==model_spatialCV$bestTune$mtry,]
+confusionMatrix(cvPredictions$pred,cvPredictions$obs)$overall
+```
+
+We see that the Kappa and the Accuracy drop considerably which means that our model is actually less able to make spatial predictions than we would expect if we consider the random cross-validation.
+
+### Spatial prediction
+
+Now we have a meaningful validation measure for the prediction model, however, it doesn't change the prediction itself:
+
+```{r predict2}
+prediction_sp <- predict(predStack,model_spatialCV)
+spplot(prediction_sp,col.regions=as.character(cols_df$col))
+```
+
+This is not surprising that the prediction is the same because the final model itself didn't change, only our error assessment was changed.
+
+So something is obviously still not ideal in our land cover classification model. We can get an idea why the prediction is still so obviously unreliable when we have a look into the variable importance.
+
+### Variable importance
+
+Although the Random Forest model is something like a black box, it gives us some basic information on the relevance of the individual predictor variables for the classification of the land cover classes.
+
+```{r trainVIS2}
+plot(varImp(model))
+```
+
+We see that for many land cover classes not the spectral channels but elevation and geolocation variables were important.
+The prediction of the class "water" for example was mainly driven by elevation, for spruce, oak and beech forest longitude was the decisive variable and latitude was an important variable to distinguish fields from other land cover classes. 
+
+So this explains the linear features and obvious misclassifications in our land cover map. What still needs to be explained is how it comes to this strong importance of geolocation variables and elevation and how we can solve the misclassifications.
+
+## Improving the model: Spatial variable selection
+
+What the variables that have the highest importance have in common is that they feature a high spatial autocorrelation (see in the visualization at the beginning of this tutorial). And that causes a problem when training data occur in a clustered way: Since clustered training damples (i.e. training polygons) means that there are many samples for one land cover class with similar geolocation (or also elevation) Random Forests learns that these variables are important. However, the relationships are not meaningful for making spatial predictions because geolocation (in such a small forest) is not a driver for land cover. Instead the autocorrelated predictors lead to overfitting because the algorithm can very well reproduce the training polygons (indicated by high Kappa values with random cross-validation) but is (due to falsely learned relationships) unable to make meaningful predictions beyond the location of the training samples (indicated by low Kappa values with spatial cross-validation).
+
+If the assumption is correct, that highly autocorrelated variables lead to overfitting, then removing these variables should solve the problem. CAST's ffs function is selecting predictor variables with user-defined cross-validation. In combination with spatial cross-validation it first checks which combination of 2 predictor variables lead to the best model. And the best model in this context is defined as the model that leads to the highest spatial Kappa. Based on the 2 best performing variables, the number of variables is increased and it is tested which further variable can increase the spatial performance. ffs stops when no further variable can increase teh spatial performance.
+
+```{r ffs, results="hide", warning=FALSE, message=FALSE}
+ffsmodel_spatial <- ffs(trainDat[,predictors],
+                    trainDat[,response],
+                    method="rf",
+                    metric="Kappa",
+                    tuneGrid=data.frame("mtry"=model$bestTune$mtry),
+                    trControl = ctrl_sp,
+                    ntree=75)
+```
+
+Plotting the results of the variable selection reveals how increasing the variables increases the performance.
+
+```{r plotffs}
+plot_ffs(ffsmodel_spatial)
+plot_ffs(ffsmodel_spatial, plotType="selected")
+```
+
+The most important variables were green, pca and pca_5_x5_sd and the blue channel. The red channels as well as the vvi could slightly imporve the predictions. We see that after 5 variables, none of the further variables could increase the spatial performance.
+
+Using the model with selected predictors only the prediction patterns now are much more reliable. The unreliable patterns that could be traced back to a misinterpretation of geolocation variables and elevation are not present anymore.
+
+```{r predict3}
+prediction_ffs <- predict(predStack,ffsmodel_spatial)
+spplot(prediction_ffs,col.regions=as.character(cols_df$col))
+```
+
+Also the spatial performance (slightly) increased (from 0.51 without spatial variable selection to 0.58 with spatial variable selection). 
+
+```{r valid_ffs}
+cvPredictions <- ffsmodel_spatial$pred[ffsmodel_spatial$pred$mtry==ffsmodel_spatial$bestTune$mtry,]
+confusionMatrix(cvPredictions$pred,cvPredictions$obs)$overall
+```
+
+## Conclusions
+Without spatial variable selection and spatial validation we assess the models performance to reproduce training data but we neither build a model that is able to make spatial predictions nor do we validate the success in doing so.
+Therefore:
+
+1. We need spatial cross-validation for error assessment otherwise there is a risk of considerable overestimation of the model performance.
+2. We further need spatial cross-validation for a spatial variable selection to build a model that is able to make reliable spatial predictions.
+
+
+### Further reading
+
+Kuhn, M., & Johnson, K. (2013). Applied Predictive Modeling. (1st ed.). New York: Springer.
+
+Meyer, H., Reudenbach, C., Wöllauer, S., Nauss, T. (under review): Importance of spatial predictor variable selection in machine learning applications - Moving from data reproduction to spatial prediction. Ecological Modelling.
+
+Meyer, H., Reudenbach, C., Hengl, T., Katurji, M., Nauss, T. (2018): Improving performance of spatio-temporal machine learning models using forward feature selection and target-oriented validation. Environmental Modelling & Software 101: 1-9. https://doi.org/10.1016/j.envsoft.2017.12.001
+
+Roberts, D. R., Bahn, V., Ciuti, S., Boyce, M. S., Elith, J., Guillera-Arroita, G., Hauenstein, S., Lahoz-Monfort, J. J., Schröder, B., Thuiller, W., Warton, D. I., Wintle, B. A., Hartig, F., & Dormann, C. F. (2017): Cross-validation strategies for data with temporal, spatial, hierarchical, or phylogenetic structure. Ecography. doi:10.1111/ecog.02881.
+
+Schratz, P., Muenchow, J., Iturritx, E., Richter, J., Brenning, A. (2019): Hyperparameter tuning and performance assessment of statistical and machine-learning algorithms using spatial data. Ecological Modelling 406: 109-120. https://doi.org/10.1016/j.ecolmodel.2019.06.002
+
+Valavi, R., Elith, J., Lahoz‐Monfort, J.J., Guillera‐Arroita, G.(2019): blockCV: An r package for generating spatially or environmentally separated folds for k‐fold cross‐validation of species distribution models. Methods Ecol Evol. 10: 225-232. https://doi.org/10.1111/2041-210X.13107 
+
+Same phenomenon as shown in this tutorial: https://gis.stackexchange.com/questions/111932/classified-images-of-randomforest-classification-look-clustered
+ 
+

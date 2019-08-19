@@ -1,0 +1,25 @@
+[general]
+creator=R package 'raster'
+created=2019-08-18 19:01:38
+[georeference]
+nrows=818
+ncols=987
+xmin=475927
+ymin=5630629
+xmax=478888
+ymax=5633083
+projection=+proj=utm +zone=32 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs
+[data]
+datatype=FLT4S
+byteorder=little
+nbands=9
+bandorder=BIL
+minvalue=44.9409713745117:36.4780082702637:53.3198318481445:0.000742532778531313:5630631:475928.5:210.218597412109:22.1681346893311:1.13811373710632
+maxvalue=237.748458862305:232.566360473633:227.347991943359:0.0253906045109034:5633081.5:478885.5:414.387725830078:225.28955078125:63.9376258850098
+nodatavalue=-3.4e+38
+[legend]
+legendtype=
+values=
+color=
+[description]
+layername=red:green:blue:vvi:lat:lon:dem:pca:pca_5_sd
