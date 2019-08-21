@@ -2,9 +2,16 @@
 title: "Machine learning in remote sensing applications"
 subtitle: "Moving from data reproduction to spatial prediction"
 author: "Hanna Meyer"
-date: "August 18, 2019"
+date: "`r Sys.Date()`"
+output:
+  rmarkdown::html_document:
+    toc: true
+    theme: united
+vignette: >
+  %\VignetteIndexEntry{Introduction to CAST}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
 abstract: "Machine learning algorithms find frequent application in spatial prediction of biotic and abiotic environmental variables. However, the characteristics of spatial data, especially spatial autocorrelation, are widely ignored. This tutorial shows that this is problematic and results in models that can reproduce training data but are unable to make spatial predictions beyond the locations of the training samples. We show that not only spatial validation strategies but also spatial variable selection is essential for reliable spatial predictions. A land cover classification task of the 'Marburg Open Forest' (www.natur40.org), is used for demonstration. Using the machine learning algorithm Random Forests it is first shown how to set up a 'default' model for spatial prediction. It will then be shown how spatial validation affects the view on the model performance. It will further be shown how spatial variable selection affects the predictions to overcome overfitting due to spatial dependencies."
-output: html_document
 editor_options: 
   chunk_output_type: console
 ---
@@ -55,7 +62,7 @@ spplot(scale(predStack))
 ```
 
 #### Vector data (Response variable)
-The shapefile contains the training sites of 10 Land cover classes. These are polygons (379 in total) that were digitized in QGIS on the basis of the aerial image using expert knowledge and can be ragarded as a ground truth for the land cover classification. 
+The shapefile contains the training sites of 10 Land cover classes. These are polygons (379 in total) that were digitized in QGIS on the basis of the aerial image using expert knowledge and can be ragarded as a ground truth for the land cover classification.
 
 ```{r loadPoly}
 trainSites <- read_sf("data/trainingSites.shp")
@@ -104,15 +111,13 @@ response <- "Type"
 ```
 
 ### Random forest model training
-We then train a Random Forest model to lean how the classes can be distinguished based on the predictors. Caret's train function is doing this job. Before starting model trainign we can specify some control settings using trainControl. For hyperparameter tuning (mtry) as well as for a first error assessment we use a 10 fold random cross validation. This is usually a default setting in machine learning applications.
-
+We then train a Random Forest model to lean how the classes can be distinguished based on the predictors. Caret's train function is doing this job. Before starting model trainign we can specify some control settings using trainControl. For hyperparameter tuning (mtry) as well as for a first error assessment we use a 10-fold random cross-validation. This is usually a default setting in machine learning applications.
 
 ```{r trainctrl, warning=FALSE, message=FALSE}
 ctrl <- trainControl(method="cv", 
                      number =10, 
                      savePredictions = TRUE)
 ```
-
 
 Model training is then performed using caret's train function. We specify "rf" as method, indicating that a Random Forest is applied. See https://topepo.github.io/caret/available-models.html for an overview of models available within caret. For model training we reduce the number of trees (ntree) to 75 to speed things up. Note that usually a larger number (>250) is appropriate. We use the Kappa index for validation.
 
@@ -164,7 +169,7 @@ Interestingly, our prediction doesn't look perfect at all. We see for example st
 Let's explain this in the next section.
 
 ## Train model with spatial cross-validation
-What we did so far is to split our data RANDOMLY into folds for cross-validation. By doing so it is most likely that each of the folds contains data from each training polygon. In this way we validate how well the model performs on nearly identical subsets of the data (hece we could say we validate how well the model can reproduce the training data). But what we want to know is how well the model is able to make predictions for these parts of the area where we don't have any training data. This cannot be assessed by random cross-validation but instead we need a taget-oriented spatial cross-validation strategy that repeatedly leaves entire spatial areas of the training data out for validation.
+What we did so far is to split our data RANDOMLY into folds for cross-validation. By doing so it is most likely that each of the folds contains data from each training polygon. In this way we validate how well the model performs on nearly identical subsets of the data (hence we could say we validate how well the model can reproduce the training data). But what we want to know is how well the model is able to make predictions for these parts of the area where we don't have any training data. This cannot be assessed by random cross-validation but instead we need a taget-oriented spatial cross-validation strategy that repeatedly leaves entire spatial areas of the training data out for validation.
 
 One (of many) ways for a spatial cross-validation is to devide the study area into spatial blocks (see Roberts et al., 2017 and Valavi et al., 2019). The traing data set already contains an attribute on a spatial block affiliation. Have a look on the spatial blocks to see how the study area was divided.
 
@@ -244,9 +249,10 @@ So this explains the linear features and obvious misclassifications in our land 
 
 ## Improving the model: Spatial variable selection
 
-What the variables that have the highest importance have in common is that they feature a high spatial autocorrelation (see in the visualization at the beginning of this tutorial). And that causes a problem when training data occur in a clustered way: Since clustered training damples (i.e. training polygons) means that there are many samples for one land cover class with similar geolocation (or also elevation) Random Forests learns that these variables are important. However, the relationships are not meaningful for making spatial predictions because geolocation (in such a small forest) is not a driver for land cover. Instead the autocorrelated predictors lead to overfitting because the algorithm can very well reproduce the training polygons (indicated by high Kappa values with random cross-validation) but is (due to falsely learned relationships) unable to make meaningful predictions beyond the location of the training samples (indicated by low Kappa values with spatial cross-validation).
+What the variables that have the highest importance have in common is that they feature a high spatial autocorrelation (see in the visualization at the beginning of this tutorial). And that causes a problem when training data occur in a clustered way: since clustered training samples (i.e. training polygons) means that there are many samples for one land cover class with similar geolocation (or also elevation) Random Forest learns that these variables are important. However, the relationships are not meaningful for making spatial predictions because geolocation (in such a small forest) is not a driver for land cover. Instead the autocorrelated predictors lead to overfitting because the algorithm can very well reproduce the training polygons (indicated by high Kappa values with random cross-validation) but is (due to falsely learned relationships) unable to make meaningful predictions beyond the location of the training samples (indicated by low Kappa values with spatial cross-validation).
 
-If the assumption is correct, that highly autocorrelated variables lead to overfitting, then removing these variables should solve the problem. CAST's ffs function is selecting predictor variables with user-defined cross-validation. In combination with spatial cross-validation it first checks which combination of 2 predictor variables lead to the best model. And the best model in this context is defined as the model that leads to the highest spatial Kappa. Based on the 2 best performing variables, the number of variables is increased and it is tested which further variable can increase the spatial performance. ffs stops when no further variable can increase teh spatial performance.
+If the assumption is correct, that highly autocorrelated variables lead to overfitting, then removing these variables should solve the problem. CAST's ffs (forward feature selection) function is selecting predictor variables with user-defined cross-validation. In combination with spatial cross-validation it first checks which combination of two predictor variables lead to the best model. And the best model in this context is defined as the model that leads to the highest spatial Kappa. Based on the two best performing variables, the number of variables is increased and it is tested which further variable can increase the spatial performance. ffs stops when no further variable can increase the spatial performance.
+Since many options of variable combinations will be tested the ffs takes quite a bit of time...
 
 ```{r ffs, results="hide", warning=FALSE, message=FALSE}
 ffsmodel_spatial <- ffs(trainDat[,predictors],
@@ -265,16 +271,16 @@ plot_ffs(ffsmodel_spatial)
 plot_ffs(ffsmodel_spatial, plotType="selected")
 ```
 
-The most important variables were green, pca and pca_5_x5_sd and the blue channel. The red channels as well as the vvi could slightly imporve the predictions. We see that after 5 variables, none of the further variables could increase the spatial performance.
+The most important variables were green, pca and pca_5x5_sd and the blue channel. The red channel as well as the vvi could slightly improve the predictions. We see that after 5 variables, none of the further variables could increase the spatial performance.
 
-Using the model with selected predictors only the prediction patterns now are much more reliable. The unreliable patterns that could be traced back to a misinterpretation of geolocation variables and elevation are not present anymore.
+Using the model with selected predictors only the prediction patterns now are much more reliable. The unreliable patterns, that could be traced back to a misinterpretation of geolocation variables and elevation, are not present anymore.
 
 ```{r predict3}
 prediction_ffs <- predict(predStack,ffsmodel_spatial)
 spplot(prediction_ffs,col.regions=as.character(cols_df$col))
 ```
 
-Also the spatial performance (slightly) increased (from 0.51 without spatial variable selection to 0.58 with spatial variable selection). 
+Also the spatial performance (slightly) increased (from a Kappa of 0.51 without spatial variable selection to a Kappa of 0.58 with spatial variable selection). 
 
 ```{r valid_ffs}
 cvPredictions <- ffsmodel_spatial$pred[ffsmodel_spatial$pred$mtry==ffsmodel_spatial$bestTune$mtry,]
@@ -286,23 +292,22 @@ Without spatial variable selection and spatial validation we assess the models p
 Therefore:
 
 1. We need spatial cross-validation for error assessment otherwise there is a risk of considerable overestimation of the model performance.
-2. We further need spatial cross-validation for a spatial variable selection to build a model that is able to make reliable spatial predictions.
-
+2. We further need spatial cross-validation for a spatial variable selection to avoid overfitting and to build a model that is able to make reliable spatial predictions.
 
 ### Further reading
 
-Kuhn, M., & Johnson, K. (2013). Applied Predictive Modeling. (1st ed.). New York: Springer.
+* Kuhn, M., & Johnson, K. (2013). Applied Predictive Modeling. (1st ed.). New York: Springer.
 
-Meyer, H., Reudenbach, C., Wöllauer, S., Nauss, T. (under review): Importance of spatial predictor variable selection in machine learning applications - Moving from data reproduction to spatial prediction. Ecological Modelling.
+* Meyer, H., Reudenbach, C., Wöllauer, S., Nauss, T. (under review): Importance of spatial predictor variable selection in machine learning applications - Moving from data reproduction to spatial prediction. Ecological Modelling.
 
-Meyer, H., Reudenbach, C., Hengl, T., Katurji, M., Nauss, T. (2018): Improving performance of spatio-temporal machine learning models using forward feature selection and target-oriented validation. Environmental Modelling & Software 101: 1-9. https://doi.org/10.1016/j.envsoft.2017.12.001
+* Meyer, H., Reudenbach, C., Hengl, T., Katurji, M., Nauss, T. (2018): Improving performance of spatio-temporal machine learning models using forward feature selection and target-oriented validation. Environmental Modelling & Software 101: 1-9. https://doi.org/10.1016/j.envsoft.2017.12.001
 
-Roberts, D. R., Bahn, V., Ciuti, S., Boyce, M. S., Elith, J., Guillera-Arroita, G., Hauenstein, S., Lahoz-Monfort, J. J., Schröder, B., Thuiller, W., Warton, D. I., Wintle, B. A., Hartig, F., & Dormann, C. F. (2017): Cross-validation strategies for data with temporal, spatial, hierarchical, or phylogenetic structure. Ecography. doi:10.1111/ecog.02881.
+* Roberts, D. R., Bahn, V., Ciuti, S., Boyce, M. S., Elith, J., Guillera-Arroita, G., Hauenstein, S., Lahoz-Monfort, J. J., Schröder, B., Thuiller, W., Warton, D. I., Wintle, B. A., Hartig, F., & Dormann, C. F. (2017): Cross-validation strategies for data with temporal, spatial, hierarchical, or phylogenetic structure. Ecography. doi:10.1111/ecog.02881.
 
-Schratz, P., Muenchow, J., Iturritx, E., Richter, J., Brenning, A. (2019): Hyperparameter tuning and performance assessment of statistical and machine-learning algorithms using spatial data. Ecological Modelling 406: 109-120. https://doi.org/10.1016/j.ecolmodel.2019.06.002
+* Schratz, P., Muenchow, J., Iturritx, E., Richter, J., Brenning, A. (2019): Hyperparameter tuning and performance assessment of statistical and machine-learning algorithms using spatial data. Ecological Modelling 406: 109-120. https://doi.org/10.1016/j.ecolmodel.2019.06.002
 
-Valavi, R., Elith, J., Lahoz‐Monfort, J.J., Guillera‐Arroita, G.(2019): blockCV: An r package for generating spatially or environmentally separated folds for k‐fold cross‐validation of species distribution models. Methods Ecol Evol. 10: 225-232. https://doi.org/10.1111/2041-210X.13107 
+* Valavi, R., Elith, J., Lahoz‐Monfort, J.J., Guillera‐Arroita, G.(2019): blockCV: An r package for generating spatially or environmentally separated folds for k‐fold cross‐validation of species distribution models. Methods Ecol Evol. 10: 225-232. https://doi.org/10.1111/2041-210X.13107 
 
-Same phenomenon as shown in this tutorial: https://gis.stackexchange.com/questions/111932/classified-images-of-randomforest-classification-look-clustered
- 
+* Same phenomenon as shown in this tutorial: https://gis.stackexchange.com/questions/111932/classified-images-of-randomforest-classification-look-clustered
 
+* Spatial validation and variable selection for spatio-temporal data: https://cran.r-project.org/web/packages/CAST/vignettes/CAST-intro.html
